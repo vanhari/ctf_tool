@@ -157,3 +157,5 @@ directoryScan
 subdomainScan
 previewResults
 
+
+#TODO use found dns in directory scan and chech /etc/host for duplicates
