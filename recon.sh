@@ -37,6 +37,14 @@ else
     echo -e "${GREEN}ffuf is installed.. continuing${NC}"
 fi
 
+# Checking for dirsearch
+if ! check_command "dirsearch"; then
+    echo -e "${RED}dirsearch is not installed. Install it and re-run the script${NC}"
+    exit
+else
+    echo -e "${GREEN}dirsearch is installed.. continuing${NC}"
+fi
+
 #Function that curls the ip and to see if there is a dns that should be put into the /etc/hosts
 checkDns(){
 	dns=($(curl -sI http://$ip_address | awk -F'[/:]' '/^Location:/ {print $5}'))
