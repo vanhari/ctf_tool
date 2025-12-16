@@ -47,14 +47,14 @@ fi
 
 #Function that curls the ip and to see if there is a dns that should be put into the /etc/hosts
 checkDns(){
-	dns=($(curl -sI http://$ip_address | awk -F'[/:]' '/^Location:/ {print $5}'))
-	if [[ -z "$dns" ]]; then
-        	echo -e "${RED}No redirect was detected. Skipping${NC}"
-	else
-		echo "Dns was found"
-        	echo -e "$ip_address    $dns" | sudo tee -a /etc/hosts >/dev/null
-		echo -e "${GREEN}$ip_address    $dns has been added to the /etc/hosts file.${NC}"
-	fi
+        dns=($(curl -sI http://$ip_address | awk -F'[/:]' '/^Location:/ {print $5}'))
+        if [[ -z "$dns" ]]; then
+                echo -e "${RED}No redirect was detected. Skipping${NC}"
+        else
+                echo "Dns was found"
+                echo -e "$ip_address    $dns" | sudo tee -a /etc/hosts >/dev/null
+                echo -e "${GREEN}$ip_address    $dns has been added to the /etc/hosts file.${NC}"
+        fi
 }
 
 #Checks if the target is available.
@@ -89,17 +89,17 @@ directoryScan() {
         read -p "Would you like to perform a directory scan on the website? (Y/n) " answer
         if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
             if [[ -z "$dns" ]]; then
-		for i in "${http_ports[@]}"; do
-		echo "Performing a scan. This may take a while. [i]"
-		dirsearch -u http://$ip_address -x 404 > results/directory_results.txt 2>&1
-                echo -e "The directory scan results were stored into a file named ${GREEN}[directory_results.txt]${NC}"
-		done
+                for i in "${http_ports[@]}"; do
+                echo "Performing a scan. This may take a while. [i]"
+                dirsearch -u http://$ip_address -q --no-color --full-url --format=plain -o results/dirsearch.txt 2>/dev/null
+                echo -e "The directory scan results were stored into a file named ${GREEN}[dirsearch.txt]${NC}"
+                done
             else
-		for i in "${http_ports[@]}"; do
-		echo "Performing a scan. This may take a while. [d]"
-		dirsearch -u http://$dns -x 404 > results/directory_results.txt 2>&1
-		echo -e "The directory scan results were stored into a file named ${GREEN}[directory_results.txt]${NC}"
-		done
+                for i in "${http_ports[@]}"; do
+                echo "Performing a scan. This may take a while. [d]"
+                dirsearch -u http://$dns -q --no-color --full-url --format=plain -o results/dirsearch.txt 2>/dev/null
+                echo -e "The directory scan results were stored into a file named ${GREEN}[dirsearch_results.txt]${NC}"
+                done
             fi
         else
             echo -e "Directory scan will not be performed."
@@ -115,13 +115,13 @@ subdomainScan() {
         read -p "Would you like to perform a subdomain scan on the website? (Y/n) " answer
         if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
             if [[ -z "$dns" ]]; then
-		echo "Performing a scan. This may take a while. [i]"
+                echo "Performing a scan. This may take a while. [i]"
                 ffuf -s -u http://$ip_address -H "Host: FUZZ.$ip_address" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 > results/subDomains.txt 2>&1
                 echo -e "The subdomains scan results were stored into a file named ${GREEN}[subDomains.txt]${NC}"
             else
-		echo "Performing a scan. This may take a while. [d]"
-		ffuf -s -u http://$dns -H "Host: FUZZ.$dns" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 > results/subDomains.txt 2>&1
-		echo -e "The subdomains scan results were stored into a file named ${GREEN}[subDomains.txt]${NC}"
+                echo "Performing a scan. This may take a while. [d]"
+                ffuf -s -u http://$dns -H "Host: FUZZ.$dns" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 > results/subDomains.txt 2>&1
+                echo -e "The subdomains scan results were stored into a file named ${GREEN}[subDomains.txt]${NC}"
             fi
         else
             echo -e "Subdomain scan will not be performed."
@@ -134,7 +134,7 @@ subdomainScan() {
 previewResults(){
         read -p "Would you like to see a compilation of all the results? (Y/n): " answer
         if [[ "$answer" = "y" ]] || [[ "$answer" = "Y" ]]; then
-	for file in results/*.txt; do
+        for file in results/*.txt; do
         echo "________________________________________________"
         echo "File: $file"
         echo "________________________________________________"
@@ -144,9 +144,9 @@ previewResults(){
         else
             sudo cat "$file"
         fi
-	done
-	fi
-	echo "________________________________________________"
+        done
+        fi
+        echo "________________________________________________"
 }
 
 checkPing
@@ -155,3 +155,4 @@ gatherPorts
 directoryScan
 subdomainScan
 previewResults
+
