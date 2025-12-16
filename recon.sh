@@ -70,7 +70,7 @@ checkPing() {
 
 #Scans the open ports and performs a more specific scan on those ports and puts that into a txt file. Also adds the http ports to an array which will later be used.
 gatherPorts() {
-    ports=($(nmap --min-rate=5000 $ip_address | grep -E "^[0-9]+/tcp\s+open\s" | awk '{print $1}' | cut -d'/' -f1))
+    ports=($(nmap -p- --min-rate=5000 -T4 $ip_address | grep -E "^[0-9]+/tcp\s+open\s" | awk '{print $1}' | cut -d'/' -f1))
     parsedPorts=$(IFS=,; echo "${ports[*]}")
     echo -e "The following ports were found ${BLUE}$parsedPorts${NC}"
     echo "Performing a more specific scan. This may take a while."
@@ -82,7 +82,7 @@ gatherPorts() {
 #function that does a directory scan if http ports were found in the previous scan.
 directoryScan() {
     #If the http_ports array is more than 0 it will do this else its just gonna skip it
-    httpParse=($(grep -E "open\s+(http|ssl/http)" ./results/nmap_results.txt | awk '{print $1}' | cut -d'/' -f1))
+    httpParse=($(grep -Ei "open\s+.*http" ./results/nmap_results.txt | awk '{print $1}' | cut -d'/' -f1))
     http_ports+=("${httpParse[@]}")
     if [[ ${#http_ports[@]} -gt 0 ]]; then
         echo -e "The following ports are possibly websites: $http_ports"
@@ -91,13 +91,13 @@ directoryScan() {
             if [[ -z "$dns" ]]; then
                 for i in "${http_ports[@]}"; do
                 echo "Performing a scan. This may take a while. [i]"
-                dirsearch -u http://$ip_address -q --no-color --full-url --format=plain -o results/dirsearch.txt 2>/dev/null
+                dirsearch -u http://$ip_address:$i -q --no-color --full-url --format=plain -o results/dirsearch_$i.txt 2>/dev/null
                 echo -e "The directory scan results were stored into a file named ${GREEN}[dirsearch.txt]${NC}"
                 done
             else
                 for i in "${http_ports[@]}"; do
                 echo "Performing a scan. This may take a while. [d]"
-                dirsearch -u http://$dns -q --no-color --full-url --format=plain -o results/dirsearch.txt 2>/dev/null
+                dirsearch -u http://$dns:$i -q --no-color --full-url --format=plain -o results/dirsearch_$i.txt 2>/dev/null
                 echo -e "The directory scan results were stored into a file named ${GREEN}[dirsearch_results.txt]${NC}"
                 done
             fi
@@ -107,6 +107,7 @@ directoryScan() {
     else
         echo -e "${RED}There were no http ports. Skipping directory scan.${NC}"
     fi
+    rmdir reports
 }
 
 #function that does a subdomain scan if http ports were found in the previous scan.
@@ -116,11 +117,11 @@ subdomainScan() {
         if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
             if [[ -z "$dns" ]]; then
                 echo "Performing a scan. This may take a while. [i]"
-                ffuf -s -u http://$ip_address -H "Host: FUZZ.$ip_address" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 > results/subDomains.txt 2>&1
+                ffuf -u http://$ip_address -H "Host: FUZZ.$ip_address" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 -of txt -o results/subDomains.txt
                 echo -e "The subdomains scan results were stored into a file named ${GREEN}[subDomains.txt]${NC}"
             else
                 echo "Performing a scan. This may take a while. [d]"
-                ffuf -s -u http://$dns -H "Host: FUZZ.$dns" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 > results/subDomains.txt 2>&1
+		ffuf -u http://$dns -H "Host: FUZZ.$dns" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 -of txt -o results/subDomains.txt
                 echo -e "The subdomains scan results were stored into a file named ${GREEN}[subDomains.txt]${NC}"
             fi
         else
@@ -142,7 +143,7 @@ previewResults(){
         if [[ -r "$file" ]]; then
             cat "$file"
         else
-            sudo cat "$file"
+            :
         fi
         done
         fi
