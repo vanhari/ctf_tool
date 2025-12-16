@@ -91,14 +91,14 @@ directoryScan() {
             if [[ -z "$dns" ]]; then
 		for i in "${http_ports[@]}"; do
 		echo "Performing a scan. This may take a while. [i]"
-		ffuf -s -w ./wordlists/DirBuster-2007_directory-list-2.3-medium.txt -u http://$ip_address:$i/FUZZ -e .php,.txt,.bak -t 400 -ac > results/ffuf_results.txt 2>&1
-                echo -e "The ffuf scan results were stored into a file named ${GREEN}[ffuf_results.txt]${NC}"
+		dirsearch -u http://$ip_address -x 404 > results/directory_results.txt 2>&1
+                echo -e "The directory scan results were stored into a file named ${GREEN}[directory_results.txt]${NC}"
 		done
             else
 		for i in "${http_ports[@]}"; do
 		echo "Performing a scan. This may take a while. [d]"
-		ffuf -s -w ./wordlists/DirBuster-2007_directory-list-2.3-medium.txt -u http://$dns:$i/FUZZ -e .php,.txt,.bak -t 400 -ac > results/ffuf_results.txt 2>&1
-		echo -e "The ffuf scan results were stored into a file named ${GREEN}[ffuf_results.txt]${NC}"
+		dirsearch -u http://$dns -x 404 > results/directory_results.txt 2>&1
+		echo -e "The directory scan results were stored into a file named ${GREEN}[directory_results.txt]${NC}"
 		done
             fi
         else
@@ -116,11 +116,11 @@ subdomainScan() {
         if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
             if [[ -z "$dns" ]]; then
 		echo "Performing a scan. This may take a while. [i]"
-                ffuf -s -u http://$ip_address -H "Host: FUZZ.$ip_address" -w ./wordlists/bitquark-subdomains-top100000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 > results/subDomains.txt 2>&1
+                ffuf -s -u http://$ip_address -H "Host: FUZZ.$ip_address" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 > results/subDomains.txt 2>&1
                 echo -e "The subdomains scan results were stored into a file named ${GREEN}[subDomains.txt]${NC}"
             else
 		echo "Performing a scan. This may take a while. [d]"
-		ffuf -s -u http://$dns -H "Host: FUZZ.$dns" -w ./wordlists/bitquark-subdomains-top100000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 > results/subDomains.txt 2>&1
+		ffuf -s -u http://$dns -H "Host: FUZZ.$dns" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 > results/subDomains.txt 2>&1
 		echo -e "The subdomains scan results were stored into a file named ${GREEN}[subDomains.txt]${NC}"
             fi
         else
