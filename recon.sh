@@ -52,9 +52,14 @@ checkDns(){
                 echo -e "${RED}No redirect was detected. Skipping${NC}"
         else
                 echo "Dns was found"
-                echo -e "$ip_address    $dns" | sudo tee -a /etc/hosts >/dev/null
-                echo -e "${GREEN}$ip_address    $dns has been added to the /etc/hosts file.${NC}"
-        fi
+		dnsExists=($(cat /etc/hosts | grep $dns))
+		if [[ -n $dnsExists ]]; then
+			echo -e "${RED}The $dns is already in the /etc/hosts changes will not be made${NC}"
+		else
+                	echo -e "$ip_address    $dns" | sudo tee -a /etc/hosts >/dev/null
+                	echo -e "${GREEN}$ip_address    $dns has been added to the /etc/hosts file.${NC}"
+		fi
+	fi
 }
 
 #Checks if the target is available.
@@ -81,65 +86,76 @@ gatherPorts() {
 
 #function that does a directory scan if http ports were found in the previous scan.
 directoryScan() {
-    #If the http_ports array is more than 0 it will do this else its just gonna skip it
-    httpParse=($(grep -Ei "open\s+.*http" ./results/nmap_results.txt | awk '{print $1}' | cut -d'/' -f1))
-    http_ports+=("${httpParse[@]}")
-    if [[ ${#http_ports[@]} -gt 0 ]]; then
+    if [[ ${#http_ports[@]} -eq 0 ]]; then
+		echo -e "${RED}There were no http ports. Skipping directory scan.${NC}"
+		exit
+	else
         echo -e "The following ports are possibly websites: $http_ports"
         read -p "Would you like to perform a directory scan on the website? (Y/n) " answer
         if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
             if [[ -z "$dns" ]]; then
                 for i in "${http_ports[@]}"; do
                 echo "Performing a scan. This may take a while. [i]"
-                dirsearch -u http://$ip_address:$i -q --no-color --full-url --format=plain -o results/dirsearch_$i.txt 2>/dev/null
+                dirsearch -u http://$ip_address:$i -x 404 -q --no-color --full-url --format=plain --user-agent "Mozilla/5.0" -o results/dirsearch_$i.txt 2>/dev/null
                 echo -e "The directory scan results were stored into a file named ${GREEN}[dirsearch.txt]${NC}"
                 done
             else
                 for i in "${http_ports[@]}"; do
                 echo "Performing a scan. This may take a while. [d]"
-                dirsearch -u http://$dns:$i -q --no-color --full-url --format=plain -o results/dirsearch_$i.txt 2>/dev/null
+                dirsearch -u http://$dns:$i -q --no-color --full-url --user-agent "Mozilla/5.0" --format=plain -o results/dirsearch_$i.txt 2>/dev/null
                 echo -e "The directory scan results were stored into a file named ${GREEN}[dirsearch_results.txt]${NC}"
                 done
             fi
+	#Here we perform the scan for subdomain(s) if any were found.
+	if [[ -s results/subDomains.txt ]]; then
+		echo -e "Performing a scan on the subdomain(s)."
+		while IFS= read -r line; do
+		dirsearch -u http://$line.$dns -x 404 -q --no-color --full-url --user-agent "Mozilla/5.0" --format=plain -o results/dirsearch_dns.txt 2>/dev/null
+		done < results/subDomains.txt 
+	else
+		:
+	fi
         else
             echo -e "Directory scan will not be performed."
         fi
-    else
-        echo -e "${RED}There were no http ports. Skipping directory scan.${NC}"
     fi
     rmdir reports
 }
 
 #function that does a subdomain scan if http ports were found in the previous scan.
 subdomainScan() {
-    if [[ ${#http_ports[@]} -gt 0 ]]; then
+
+	  #If the http_ports array is more than 0 it will do this else its just gonna skip it
+    httpParse=($(grep -Ei "open\s+.*http" ./results/nmap_results.txt | awk '{print $1}' | cut -d'/' -f1))
+    http_ports+=("${httpParse[@]}")
+    if [[ ${#http_ports[@]} -gt 0 && -n "$dns" ]]; then
         read -p "Would you like to perform a subdomain scan on the website? (Y/n) " answer
         if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
-            if [[ -z "$dns" ]]; then
-                echo "Performing a scan. This may take a while. [i]"
-                ffuf -u http://$ip_address -H "Host: FUZZ.$ip_address" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 -of txt -o results/subDomains.txt
-                echo -e "The subdomains scan results were stored into a file named ${GREEN}[subDomains.txt]${NC}"
-            else
-                echo "Performing a scan. This may take a while. [d]"
-		ffuf -u http://$dns -H "Host: FUZZ.$dns" -w ./wordlists/subdomains-top1million-20000.txt -t 200 -timeout 10 -ac --fc 301,302,403,404 -of txt -o results/subDomains.txt
-                echo -e "The subdomains scan results were stored into a file named ${GREEN}[subDomains.txt]${NC}"
+            if [[ -n "$dns" ]]; then
+                echo "Performing a subdomain scan. This may take a while. [d]"
+		ffuf -c -u http://$dns -H "Host: FUZZ.$dns" -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt -fw 3 -of csv -o results/subDomains.csv
+		cut -d',' -f1 results/subDomains.csv | tail -n +2 > results/subDomains.txt
+		rm results/subDomains.csv
+		while IFS= read -r line; do
+                	echo -e "$ip_address    $line.$dns" | sudo tee -a /etc/hosts >/dev/null
+		done < results/subDomains.txt
+		echo -e "The subdomains scan results were stored into a file named ${GREEN}[subDomains.txt]${NC} and was added to ${GREEN}/etc/hosts${NC}"
             fi
         else
             echo -e "Subdomain scan will not be performed."
         fi
-    else
+else
         echo -e "${RED}There were no http ports. Skipping scan.${NC}"
-    fi
+fi
 }
 
 previewResults(){
         read -p "Would you like to see a compilation of all the results? (Y/n): " answer
         if [[ "$answer" = "y" ]] || [[ "$answer" = "Y" ]]; then
-        for file in results/*.txt; do
-        echo "________________________________________________"
+        for file in results/*; do
+	echo -e "${RED}________________________________________________${NC}"
         echo "File: $file"
-        echo "________________________________________________"
-
+	echo -e "${RED}________________________________________________${NC}"
         if [[ -r "$file" ]]; then
             cat "$file"
         else
@@ -147,15 +163,11 @@ previewResults(){
         fi
         done
         fi
-        echo "________________________________________________"
 }
 
 checkPing
 checkDns
 gatherPorts
-directoryScan
 subdomainScan
+directoryScan
 previewResults
-
-
-#TODO use found dns in directory scan and chech /etc/host for duplicates
