@@ -9,7 +9,7 @@ NC='\033[0m'
 ip_address=$1
 http_ports=()
 
-#Just a check to see if an IP-address was given
+#Check to see if IP parameter was given
 if [[ -z "$1" ]]; then
     echo "No IP-address was given exiting the program."
     exit
@@ -17,32 +17,33 @@ else
         :
 fi
 
+#Command to check if a tool is installed
 check_command() {
     command -v "$1" &>/dev/null
 }
 
 # Checking for nmap
 if ! check_command "nmap"; then
-    echo -e "${RED}nmap is not installed. Install it and re-run the script.${NC}"
+    echo -e "${RED}nmap is not installed.${NC} Install it and re-run the script.${NC}"
     exit
 else
-    echo -e "${GREEN}nmap is installed.. continuing${NC}"
+	:
 fi
 
 # Checking for ffuf
 if ! check_command "ffuf"; then
-    echo -e "${RED}ffuf is not installed. Install it and re-run the script${NC}"
+    echo -e "${RED}ffuf is not installed.${NC} Install it and re-run the script${NC}"
     exit
 else
-    echo -e "${GREEN}ffuf is installed.. continuing${NC}"
+	:
 fi
 
 # Checking for dirsearch
 if ! check_command "dirsearch"; then
-    echo -e "${RED}dirsearch is not installed. Install it and re-run the script${NC}"
+    echo -e "${RED}dirsearch is not installed.${NC} Install it and re-run the script${NC}"
     exit
 else
-    echo -e "${GREEN}dirsearch is installed.. continuing${NC}"
+	:
 fi
 
 #Function that curls the ip and to see if there is a dns that should be put into the /etc/hosts
@@ -73,7 +74,7 @@ checkPing() {
     exit
 }
 
-#Scans the open ports and performs a more specific scan on those ports and puts that into a txt file. Also adds the http ports to an array which will later be used.
+#gathers the ports and does a specific scan on FOUND ports
 gatherPorts() {
     ports=($(nmap -p- --min-rate=5000 -T4 $ip_address | grep -E "^[0-9]+/tcp\s+open\s" | awk '{print $1}' | cut -d'/' -f1))
     parsedPorts=$(IFS=,; echo "${ports[*]}")
@@ -84,7 +85,7 @@ gatherPorts() {
     echo -e "The nmap scan results were stored into a file named ${GREEN}[nmap_results.txt]${NC}"
 }
 
-#function that does a directory scan if http ports were found in the previous scan.
+#Does a directory scan IF http ports were found in the previous scan.
 directoryScan() {
     if [[ ${#http_ports[@]} -eq 0 ]]; then
 		echo -e "${RED}There were no http ports. Skipping directory scan.${NC}"
@@ -122,18 +123,18 @@ directoryScan() {
     rmdir reports
 }
 
-#function that does a subdomain scan if http ports were found in the previous scan.
+#function that does a subdomain scan. Is done before the directory scan
 subdomainScan() {
-
-	  #If the http_ports array is more than 0 it will do this else its just gonna skip it
+#If the http_ports array is more than 0 it will do this else its just gonna skip it
     httpParse=($(grep -Ei "open\s+.*http" ./results/nmap_results.txt | awk '{print $1}' | cut -d'/' -f1))
     http_ports+=("${httpParse[@]}")
     if [[ ${#http_ports[@]} -gt 0 && -n "$dns" ]]; then
         read -p "Would you like to perform a subdomain scan on the website? (Y/n) " answer
         if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
             if [[ -n "$dns" ]]; then
-                echo "Performing a subdomain scan. This may take a while. [d]"
-		ffuf -c -u http://$dns -H "Host: FUZZ.$dns" -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt -fw 3 -of csv -o results/subDomains.csv
+                echo "Performing a subdomain scan. This may take a while."
+		baselineFilter=$(curl -s -H "Host: random123.$dns" http://$dns | wc -c)
+		ffuf -c -u http://$dns -H "Host: FUZZ.$dns" -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt -fs $baselineFilter -of csv -o results/subDomains.csv
 		cut -d',' -f1 results/subDomains.csv | tail -n +2 > results/subDomains.txt
 		rm results/subDomains.csv
 		while IFS= read -r line; do
@@ -165,9 +166,14 @@ previewResults(){
         fi
 }
 
+
+mainfunction(){
 checkPing
 checkDns
 gatherPorts
 subdomainScan
 directoryScan
 previewResults
+}
+
+mainfunction
