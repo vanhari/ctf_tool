@@ -427,24 +427,49 @@ writeSummary() {
         echo "============================================"
         echo ""
 
+        # ── 1. INTERESTING PATHS FIRST (most actionable) ─────────────────
         echo "--------------------------------------------"
-        echo "  OPEN PORTS & SERVICES"
+        echo "  INTERESTING PATHS"
         echo "--------------------------------------------"
-        if [[ -f "$output_dir/nmap_results.txt" ]]; then
-            grep -E "^[0-9]+/tcp\s+open" "$output_dir/nmap_results.txt" \
-                | awk '{printf "  %-8s %-12s %s\n", $1, $3, substr($0, index($0,$4))}'
+        if [[ ${#unique_paths[@]} -eq 0 ]]; then
+            echo "  none"
         else
-            echo "  (nmap results not available)"
+            # Group paths by origin (port + scheme)
+            declare -A path_groups
+            for p in "${unique_paths[@]}"; do
+                # p format: "STATUS  http(s)://host:port/path"
+                local url
+                url=$(echo "$p" | awk '{print $2}')
+                local origin
+                # Extract scheme + host + port as group key
+                origin=$(echo "$url" | grep -oP '^https?://[^/]+')
+                path_groups["$origin"]+="$p"$'\n'
+            done
+
+            for origin in $(echo "${!path_groups[@]}" | tr ' ' '\n' | sort); do
+                echo ""
+                echo "  [ $origin ]"
+                while IFS= read -r entry; do
+                    [[ -z "$entry" ]] && continue
+                    local status url path
+                    status=$(echo "$entry" | awk '{print $1}')
+                    url=$(echo "$entry"    | awk '{print $2}')
+                    path=$(echo "$url" | grep -oP '(?<=://[^/]{1,100})/.+' || echo "/")
+
+                    # Colour-code status for terminals that support it
+                    case "$status" in
+                        200)       printf "    ${GREEN}%-5s${NC} %s\n" "$status" "$path" ;;
+                        301|302)   printf "    ${YELLOW}%-5s${NC} %s\n" "$status" "$path" ;;
+                        401|403)   printf "    ${RED}%-5s${NC} %s\n" "$status" "$path" ;;
+                        *)         printf "    %-5s %s\n" "$status" "$path" ;;
+                    esac
+                done <<< "${path_groups[$origin]}"
+            done
+            unset path_groups
         fi
         echo ""
 
-        echo "--------------------------------------------"
-        echo "  WEB PORTS"
-        echo "--------------------------------------------"
-        echo "  HTTP:   $http_ports_str"
-        echo "  HTTPS:  $https_ports_str"
-        echo ""
-
+        # ── 2. SUBDOMAINS ────────────────────────────────────────────────
         echo "--------------------------------------------"
         echo "  SUBDOMAINS  ($subdomain_count found)"
         echo "--------------------------------------------"
@@ -457,17 +482,26 @@ writeSummary() {
         fi
         echo ""
 
+        # ── 3. OPEN PORTS & SERVICES ─────────────────────────────────────
         echo "--------------------------------------------"
-        echo "  INTERESTING PATHS"
+        echo "  OPEN PORTS & SERVICES"
         echo "--------------------------------------------"
-        if [[ ${#unique_paths[@]} -eq 0 ]]; then
-            echo "  none"
+        if [[ -f "$output_dir/nmap_results.txt" ]]; then
+            grep -E "^[0-9]+/tcp\s+open" "$output_dir/nmap_results.txt" \
+                | awk '{printf "  %-10s %-14s %s\n", $1, $3, substr($0, index($0,$4))}'
         else
-            for p in "${unique_paths[@]}"; do
-                echo "  $p"
-            done
+            echo "  (nmap results not available)"
         fi
         echo ""
+
+        # ── 4. WEB PORTS (quick ref) ─────────────────────────────────────
+        echo "--------------------------------------------"
+        echo "  WEB PORTS"
+        echo "--------------------------------------------"
+        echo "  HTTP:   $http_ports_str"
+        echo "  HTTPS:  $https_ports_str"
+        echo ""
+
         echo "============================================"
     } > "$summary_file"
 
