@@ -1,14 +1,11 @@
 #!/bin/bash
 
-# ============================================================
-#  recon.sh — CTF recon automation
-#  Usage: ./recon.sh -t <ip> [options]
-# ============================================================
-
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
 
 cat << "EOF"
@@ -20,12 +17,9 @@ cat << "EOF"
 | $$      | $$_____/| $$      | $$  | $$| $$  | $$     \____  $$| $$  | $$
 | $$      |  $$$$$$$|  $$$$$$$|  $$$$$$/| $$  | $$ /$$ /$$$$$$$/| $$  | $$
 |__/       \_______/ \_______/ \______/ |__/  |__/|__/|_______/ |__/  |__/
-                                                                          
-                                                                          
+
 EOF
 
-
-# Always store results relative to the script itself, not the calling directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ip_address=""
@@ -38,11 +32,10 @@ interesting_paths=()
 yes_mode=false
 quiet_mode=false
 
-# Best subdomain wordlist available on Kali by default
 wordlist_sub="/usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt"
 wordlist_dir="/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt"
 
-# ── Helpers ──────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────
 
 usage() {
     echo -e "Usage: $0 -t <ip> [options]"
@@ -62,7 +55,6 @@ usage() {
     exit 0
 }
 
-# Pre-parse multi-char flags before getopts (bash only supports single chars)
 args=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -91,7 +83,6 @@ fi
 
 output_dir="$SCRIPT_DIR/results/$ip_address"
 
-# Auto-answer Y when -y is set
 confirm() {
     local prompt="$1"
     if [[ "$yes_mode" == true ]]; then
@@ -102,7 +93,6 @@ confirm() {
     [[ "$answer" == "y" || "$answer" == "Y" || -z "$answer" ]]
 }
 
-# Only print in verbose mode
 log() {
     [[ "$quiet_mode" == false ]] && echo -e "$1"
 }
@@ -115,7 +105,6 @@ check_command() {
 
 mkdir -p "$output_dir"
 echo -e "${BLUE}[*] Output: ${GREEN}${output_dir}/${NC}"
-
 echo ""
 log "${BLUE}=== Checking tools ===${NC}"
 
@@ -139,30 +128,30 @@ checkPing() {
     fi
 }
 
-# Add a hostname to /etc/hosts, handling three cases:
-#   1. Not present         → add it
-#   2. Correct IP          → skip
-#   3. Wrong IP            → update it
 addToHosts() {
     local entry_ip="$1"
     local hostname="$2"
-    local existing_line existing_ip
+    local escaped_host
+    escaped_host=$(printf '%s' "$hostname" | sed 's/\./\\./g')
 
-    existing_line=$(grep -P "\s${hostname}(\s|$)" /etc/hosts | head -1 | tr -d '\r')
+    local existing_line existing_ip
+    existing_line=$(grep -E "(^|[[:space:]])${escaped_host}([[:space:]]|$)" /etc/hosts \
+        | grep -v '^[[:space:]]*#' | head -1 | tr -d '\r')
 
     if [[ -z "$existing_line" ]]; then
-        echo -e "$entry_ip    $hostname" | sudo tee -a /etc/hosts >/dev/null
+        echo -e "$entry_ip\t$hostname" | sudo tee -a /etc/hosts >/dev/null
         echo -e "${GREEN}[+] Added $hostname to /etc/hosts${NC}"
+        return
+    fi
+
+    existing_ip=$(echo "$existing_line" | awk '{print $1}' | tr -d '\r')
+    if [[ "$existing_ip" == "$entry_ip" ]]; then
+        log "${YELLOW}[!] $hostname already in /etc/hosts — skipping${NC}"
     else
-        existing_ip=$(echo "$existing_line" | awk '{print $1}' | tr -d '\r')
-        if [[ "$existing_ip" == "$entry_ip" ]]; then
-            log "${YELLOW}[!] $hostname already in /etc/hosts — skipping${NC}"
-        else
-            echo -e "${YELLOW}[!] $hostname points to wrong IP ($existing_ip) — updating${NC}"
-            sudo sed -i "/$hostname/d" /etc/hosts
-            echo -e "$entry_ip    $hostname" | sudo tee -a /etc/hosts >/dev/null
-            echo -e "${GREEN}[+] Updated $hostname → $entry_ip${NC}"
-        fi
+        echo -e "${YELLOW}[!] $hostname points to wrong IP ($existing_ip) — updating${NC}"
+        sudo sed -i "/[[:space:]]${escaped_host}\([[:space:]]\|$\)/d" /etc/hosts
+        echo -e "$entry_ip\t$hostname" | sudo tee -a /etc/hosts >/dev/null
+        echo -e "${GREEN}[+] Updated $hostname → $entry_ip${NC}"
     fi
 }
 
@@ -172,14 +161,34 @@ checkDns() {
 
     local found_dns=""
 
-    # Try HTTP then HTTPS
-    found_dns=$(curl -sI --max-time 5 "http://$ip_address" \
-        | awk -F'[/:]' '/^Location:/ {print $5}' | tr -d '\r')
+    # Try up to four common entry points; take the first hostname we find
+    local probe_urls=(
+        "http://$ip_address"
+        "http://$ip_address:8080"
+        "https://$ip_address"
+        "https://$ip_address:8443"
+    )
 
-    if [[ -z "$found_dns" ]]; then
-        found_dns=$(curl -sIk --max-time 5 "https://$ip_address" \
-            | awk -F'[/:]' '/^Location:/ {print $5}' | tr -d '\r')
-    fi
+    for url in "${probe_urls[@]}"; do
+        local location
+        location=$(curl -sILk --max-time 5 --connect-timeout 3 "$url" \
+            | grep -i '^Location:' | tail -1 | tr -d '\r')
+
+        [[ -z "$location" ]] && continue
+
+        # Extract hostname robustly — handles http://host, http://host:port, and /path
+        local candidate
+        candidate=$(echo "$location" \
+            | grep -oP '(?<=://)[^/:]+' \
+            | grep -v '^[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+$' \
+            | head -1)
+
+        if [[ -n "$candidate" ]]; then
+            found_dns="$candidate"
+            echo -e "${GREEN}[+] DNS found via $url → $found_dns${NC}"
+            break
+        fi
+    done
 
     if [[ -z "$found_dns" ]]; then
         log "${YELLOW}[!] No redirect found — continuing without DNS${NC}"
@@ -187,10 +196,8 @@ checkDns() {
     fi
 
     dns="$found_dns"
-    echo -e "${GREEN}[+] DNS found: $dns${NC}"
     addToHosts "$ip_address" "$dns"
 
-    # Rename output folder to DNS name
     local new_dir="$SCRIPT_DIR/results/$dns"
     if [[ "$output_dir" != "$new_dir" ]]; then
         mv "$output_dir" "$new_dir"
@@ -205,17 +212,19 @@ gatherPorts() {
     echo ""
     log "${BLUE}=== Port scanning ===${NC}"
 
-    local ports
-    ports=($(nmap -p- --min-rate=5000 -T4 "$ip_address" \
-        | grep -E "^[0-9]+/tcp\s+open\s" | awk '{print $1}' | cut -d'/' -f1))
+    local ports_raw
+    ports_raw=$(nmap -p- --min-rate=5000 -T4 "$ip_address" \
+        | grep -E "^[0-9]+/tcp[[:space:]]+open[[:space:]]" | awk '{print $1}' | cut -d'/' -f1)
 
-    if [[ ${#ports[@]} -eq 0 ]]; then
+    mapfile -t open_ports <<< "$ports_raw"
+    open_ports=( $(printf '%s\n' "${open_ports[@]}" | grep -v '^$') )
+
+    if [[ ${#open_ports[@]} -eq 0 ]]; then
         echo -e "${RED}[-] No open ports found${NC}"; return
     fi
 
-    open_ports+=("${ports[@]}")
     local parsedPorts
-    parsedPorts=$(IFS=,; echo "${ports[*]}")
+    parsedPorts=$(IFS=,; echo "${open_ports[*]}")
     echo -e "[+] Open ports: ${BLUE}$parsedPorts${NC}"
     log "[*] Running detailed scan..."
 
@@ -223,9 +232,6 @@ gatherPorts() {
     log "${GREEN}[+] Nmap results saved${NC}"
 }
 
-# Probe each open port by actually talking to it — more reliable than
-# trusting nmap's service name guesses. Uses DNS hostname so virtual
-# hosts respond correctly (hitting by IP alone often returns nothing).
 probeWebPorts() {
     echo ""
     log "${BLUE}=== Probing for web services ===${NC}"
@@ -235,24 +241,36 @@ probeWebPorts() {
     local probe_host="${dns:-$ip_address}"
 
     for port in "${open_ports[@]}"; do
-        local status_http status_https ssl_result
-        local has_tls=false
+        # Attempt HTTPS first using a HEAD request; check that we got a valid TLS cert exchange
+        # by looking for a numeric ssl_verify_result AND a non-empty HTTP status code.
+        # curl returns ssl_verify_result="" (empty) when no TLS handshake occurs at all,
+        # so we guard against that explicitly.
+        local ssl_result status_https
+        ssl_result=$(curl -sk -o /dev/null \
+            -w "%{ssl_verify_result}" \
+            --max-time 4 --connect-timeout 3 \
+            "https://$probe_host:$port" 2>/dev/null)
 
-        status_http=$(curl -s -o /dev/null -w "%{http_code}" \
-            --max-time 3 --connect-timeout 2 "http://$probe_host:$port" 2>/dev/null)
+        status_https=$(curl -sk -o /dev/null \
+            -w "%{http_code}" \
+            --max-time 4 --connect-timeout 3 \
+            "https://$probe_host:$port" 2>/dev/null)
 
-        status_https=$(curl -sk -o /dev/null -w "%{http_code}" \
-            --max-time 3 --connect-timeout 2 "https://$probe_host:$port" 2>/dev/null)
-
-        # ssl_verify_result is only populated when a real TLS handshake occurred
-        ssl_result=$(curl -sk -o /dev/null -w "%{ssl_verify_result}" \
-            --max-time 3 --connect-timeout 2 "https://$probe_host:$port" 2>/dev/null)
-        [[ "$ssl_result" =~ ^[0-9]+$ ]] && has_tls=true
-
-        if [[ "$has_tls" == true && "$status_https" =~ ^[1-5][0-9]{2}$ ]]; then
+        # ssl_verify_result is only set when a real TLS handshake happened;
+        # must be a number AND the status code must be a plausible HTTP response
+        if [[ "$ssl_result" =~ ^[0-9]+$ && "$status_https" =~ ^[1-5][0-9]{2}$ && "$status_https" != "000" ]]; then
             echo -e "${GREEN}[+] Port $port → HTTPS ($status_https)${NC}"
             https_ports+=("$port")
-        elif [[ "$status_http" =~ ^[1-5][0-9]{2}$ ]]; then
+            continue
+        fi
+
+        local status_http
+        status_http=$(curl -s -o /dev/null \
+            -w "%{http_code}" \
+            --max-time 4 --connect-timeout 3 \
+            "http://$probe_host:$port" 2>/dev/null)
+
+        if [[ "$status_http" =~ ^[1-5][0-9]{2}$ && "$status_http" != "000" ]]; then
             echo -e "${GREEN}[+] Port $port → HTTP ($status_http)${NC}"
             http_ports+=("$port")
         else
@@ -269,20 +287,18 @@ subdomainScan() {
     log "${BLUE}=== Subdomain scan ===${NC}"
 
     [[ ${#http_ports[@]} -eq 0 && ${#https_ports[@]} -eq 0 ]] && { log "${RED}[-] No web ports — skipping${NC}"; return; }
-    [[ -z "$dns" ]]       && { log "${YELLOW}[!] No DNS name — skipping${NC}"; return; }
+    [[ -z "$dns" ]]            && { log "${YELLOW}[!] No DNS name — skipping${NC}"; return; }
     [[ "$has_ffuf" == false ]] && { log "${YELLOW}[!] ffuf missing — skipping${NC}"; return; }
 
     if ! confirm "Perform subdomain scan?"; then
         echo "[*] Skipping subdomain scan."; return
     fi
 
-    # Verify wordlist exists
     if [[ ! -f "$wordlist_sub" ]]; then
         echo -e "${RED}[-] Subdomain wordlist not found: $wordlist_sub${NC}"
         return
     fi
 
-    # Helper to run one ffuf pass and append results to subDomains.txt
     _ffuf_pass() {
         local scheme="$1"
         local port="$2"
@@ -310,19 +326,16 @@ subdomainScan() {
         fi
 
         if [[ -f "$tmp_csv" ]]; then
-            cut -d',' -f1 "$tmp_csv" | tail -n +2 >> "$output_dir/subDomains.txt"
+            tail -n +2 "$tmp_csv" | cut -d',' -f1 | grep -v '^$' >> "$output_dir/subDomains.txt"
             rm "$tmp_csv"
         fi
     }
 
-    # Run over HTTP and/or HTTPS depending on what ports are open.
-    # Some subdomains only exist on one protocol so we scan both when available.
-    : > "$output_dir/subDomains.txt"   # reset/create file
+    : > "$output_dir/subDomains.txt"
 
     [[ ${#http_ports[@]} -gt 0 ]]  && _ffuf_pass "http"  "${http_ports[0]}"
     [[ ${#https_ports[@]} -gt 0 ]] && _ffuf_pass "https" "${https_ports[0]}"
 
-    # Deduplicate across both passes
     if [[ -s "$output_dir/subDomains.txt" ]]; then
         sort -u "$output_dir/subDomains.txt" -o "$output_dir/subDomains.txt"
     else
@@ -334,7 +347,6 @@ subdomainScan() {
     echo -e "[+] Found ${BLUE}${found_count}${NC} subdomain(s):"
     sed 's/^/    /' "$output_dir/subDomains.txt"
 
-    # Safety cap — >10 results is suspicious, confirm before writing /etc/hosts
     if [[ "$found_count" -gt 10 && "$yes_mode" == false ]]; then
         echo -e "${YELLOW}[!] $found_count subdomains found — this seems high${NC}"
         read -rp "    Add all to /etc/hosts? (y/N) " hosts_answer
@@ -352,7 +364,6 @@ subdomainScan() {
     echo -e "${GREEN}[+] Subdomains saved to ${output_dir}/subDomains.txt${NC}"
 }
 
-# Run feroxbuster on a target URL and harvest interesting paths
 _runFerox() {
     local target="$1"
     local outfile="$2"
@@ -373,8 +384,12 @@ _runFerox() {
 
     if [[ -f "$outfile" ]]; then
         while IFS= read -r path_line; do
-            if [[ "$path_line" =~ ^([0-9]{3})[[:space:]].*[[:space:]](https?://[^[:space:]=>]+) ]]; then
-                interesting_paths+=("${BASH_REMATCH[1]}  ${BASH_REMATCH[2]}")
+            if [[ "$path_line" =~ ^([0-9]{3})[[:space:]].*[[:space:]](https?://[^[:space:]=\>]+) ]]; then
+                local status="${BASH_REMATCH[1]}"
+                local url="${BASH_REMATCH[2]}"
+                # Normalise: strip trailing slashes for dedup, keep original for display
+                local norm_url="${url%/}"
+                interesting_paths+=("${status}  ${norm_url}")
             fi
         done < "$outfile"
     fi
@@ -387,7 +402,6 @@ directoryScan() {
     [[ ${#http_ports[@]} -eq 0 && ${#https_ports[@]} -eq 0 ]] && { echo -e "${RED}[-] No web ports — skipping${NC}"; return; }
     [[ "$has_feroxbuster" == false ]] && { echo -e "${YELLOW}[!] feroxbuster missing — skipping${NC}"; return; }
 
-    # Verify wordlist exists
     if [[ ! -f "$wordlist_dir" ]]; then
         echo -e "${RED}[-] Directory wordlist not found: $wordlist_dir${NC}"
         return
@@ -420,126 +434,164 @@ directoryScan() {
 
 writeSummary() {
     local summary_file="$output_dir/summary.txt"
-    local http_ports_str="${http_ports[*]:-none}"
-    local https_ports_str="${https_ports[*]:-none}"
-    local subdomain_count=0
 
+    # Deduplicate paths collected across all ferox runs
+    local -a unique_paths
+    mapfile -t unique_paths < <(printf '%s\n' "${interesting_paths[@]}" | sort -u | grep -v '^$')
+
+    local subdomain_count=0
     [[ -s "$output_dir/subDomains.txt" ]] && subdomain_count=$(wc -l < "$output_dir/subDomains.txt")
 
-    # Deduplicate interesting paths
-    local -a unique_paths
-    while IFS= read -r line; do
-        unique_paths+=("$line")
-    done < <(printf '%s\n' "${interesting_paths[@]}" | sort -u)
+    # Build grouped path data into a temp associative array written to a temp file
+    # to avoid the subshell-scope issue with declare -A inside { } > file redirects.
+    local tmp_paths
+    tmp_paths=$(mktemp)
+
+    declare -A path_groups
+    for entry in "${unique_paths[@]}"; do
+        local status url origin
+        status=$(awk '{print $1}' <<< "$entry")
+        url=$(awk '{print $2}' <<< "$entry")
+        origin=$(grep -oP '^https?://[^/]+' <<< "$url")
+        path_groups["$origin"]+="${status}||${url}"$'\n'
+    done
+
+    for origin in $(printf '%s\n' "${!path_groups[@]}" | sort); do
+        echo "ORIGIN:${origin}" >> "$tmp_paths"
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            echo "$line" >> "$tmp_paths"
+        done <<< "${path_groups[$origin]}"
+        echo "---" >> "$tmp_paths"
+    done
+    unset path_groups
 
     {
-        echo "============================================"
-        echo "  RECON SUMMARY"
-        echo "  Target:    $ip_address"
-        echo "  DNS:       ${dns:-none}"
-        echo "  Generated: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "============================================"
+        local bar="════════════════════════════════════════════════════════"
+        local thin="────────────────────────────────────────────────────────"
+
+        echo -e "${BOLD}${BLUE}"
+        echo "  $bar"
+        printf "  %-56s\n" "RECON SUMMARY"
+        echo "  $bar"
+        echo -e "${NC}"
+        printf "  ${CYAN}%-14s${NC} %s\n" "Target:"    "$ip_address"
+        printf "  ${CYAN}%-14s${NC} %s\n" "DNS:"       "${dns:-none}"
+        printf "  ${CYAN}%-14s${NC} %s\n" "HTTP:"      "${http_ports[*]:-none}"
+        printf "  ${CYAN}%-14s${NC} %s\n" "HTTPS:"     "${https_ports[*]:-none}"
+        printf "  ${CYAN}%-14s${NC} %s\n" "Generated:" "$(date '+%Y-%m-%d %H:%M:%S')"
         echo ""
 
-        # ── 1. INTERESTING PATHS FIRST (most actionable) ─────────────────
-        echo "--------------------------------------------"
-        echo "  INTERESTING PATHS"
-        echo "--------------------------------------------"
-        if [[ ${#unique_paths[@]} -eq 0 ]]; then
-            echo "  none"
+        # ── OPEN PORTS & SERVICES ────────────────────────────────────────
+        echo -e "${BOLD}  $thin${NC}"
+        echo -e "${BOLD}  OPEN PORTS & SERVICES${NC}"
+        echo -e "${BOLD}  $thin${NC}"
+        if [[ -f "$output_dir/nmap_results.txt" ]]; then
+            local service_lines
+            service_lines=$(grep -E "^[0-9]+/tcp[[:space:]]+open" "$output_dir/nmap_results.txt")
+            if [[ -n "$service_lines" ]]; then
+                printf "  ${CYAN}%-12s %-10s %-16s %s${NC}\n" "PORT" "STATE" "SERVICE" "VERSION"
+                echo -e "  $thin"
+                while IFS= read -r sline; do
+                    local port state service version
+                    port=$(awk '{print $1}' <<< "$sline")
+                    state=$(awk '{print $2}' <<< "$sline")
+                    service=$(awk '{print $3}' <<< "$sline")
+                    version=$(awk '{$1=$2=$3=""; print substr($0,4)}' <<< "$sline")
+                    printf "  ${GREEN}%-12s${NC} %-10s ${YELLOW}%-16s${NC} %s\n" \
+                        "$port" "$state" "$service" "$version"
+                done <<< "$service_lines"
+            else
+                echo "  (no open TCP ports recorded)"
+            fi
         else
-            # Group paths by origin (port + scheme)
-            declare -A path_groups
-            for p in "${unique_paths[@]}"; do
-                # p format: "STATUS  http(s)://host:port/path"
-                local url
-                url=$(echo "$p" | awk '{print $2}')
-                local origin
-                # Extract scheme + host + port as group key
-                origin=$(echo "$url" | grep -oP '^https?://[^/]+')
-                path_groups["$origin"]+="$p"$'\n'
-            done
-
-            for origin in $(echo "${!path_groups[@]}" | tr ' ' '\n' | sort); do
-                echo ""
-                echo "  [ $origin ]"
-                while IFS= read -r entry; do
-                    [[ -z "$entry" ]] && continue
-                    local status url path
-                    status=$(echo "$entry" | awk '{print $1}')
-                    url=$(echo "$entry"    | awk '{print $2}')
-                    path=$(echo "$url" | grep -oP '(?<=://[^/]{1,100})/.+' || echo "/")
-
-                    # Colour-code status for terminals that support it
-                    case "$status" in
-                        200)       printf "    ${GREEN}%-5s${NC} %s\n" "$status" "$path" ;;
-                        301|302)   printf "    ${YELLOW}%-5s${NC} %s\n" "$status" "$path" ;;
-                        401|403)   printf "    ${RED}%-5s${NC} %s\n" "$status" "$path" ;;
-                        *)         printf "    %-5s %s\n" "$status" "$path" ;;
-                    esac
-                done <<< "${path_groups[$origin]}"
-            done
-            unset path_groups
+            echo "  (nmap not run)"
         fi
         echo ""
 
-        # ── 2. SUBDOMAINS ────────────────────────────────────────────────
-        echo "--------------------------------------------"
-        echo "  SUBDOMAINS  ($subdomain_count found)"
-        echo "--------------------------------------------"
+        # ── SUBDOMAINS ───────────────────────────────────────────────────
+        echo -e "${BOLD}  $thin${NC}"
+        printf "${BOLD}  SUBDOMAINS${NC}  (%d found)\n" "$subdomain_count"
+        echo -e "${BOLD}  $thin${NC}"
         if [[ "$subdomain_count" -gt 0 ]]; then
             while IFS= read -r sub; do
-                [[ -n "$sub" ]] && echo "  $sub.$dns"
+                [[ -z "$sub" ]] && continue
+                echo -e "  ${GREEN}→${NC} $sub.$dns"
             done < "$output_dir/subDomains.txt"
         else
             echo "  none"
         fi
         echo ""
 
-        # ── 3. OPEN PORTS & SERVICES ─────────────────────────────────────
-        echo "--------------------------------------------"
-        echo "  OPEN PORTS & SERVICES"
-        echo "--------------------------------------------"
-        if [[ -f "$output_dir/nmap_results.txt" ]]; then
-            grep -E "^[0-9]+/tcp\s+open" "$output_dir/nmap_results.txt" \
-                | awk '{printf "  %-10s %-14s %s\n", $1, $3, substr($0, index($0,$4))}'
+        # ── INTERESTING PATHS ────────────────────────────────────────────
+        echo -e "${BOLD}  $thin${NC}"
+        printf "${BOLD}  INTERESTING PATHS${NC}  (%d found)\n" "${#unique_paths[@]}"
+        echo -e "${BOLD}  $thin${NC}"
+
+        if [[ ! -s "$tmp_paths" ]]; then
+            echo "  none"
         else
-            echo "  (nmap results not available)"
+            local current_origin=""
+            while IFS= read -r pline; do
+                if [[ "$pline" == ORIGIN:* ]]; then
+                    current_origin="${pline#ORIGIN:}"
+                    echo ""
+                    echo -e "  ${BOLD}${CYAN}[ $current_origin ]${NC}"
+                    printf "  ${CYAN}%-8s %s${NC}\n" "STATUS" "PATH"
+                    echo "  ──────────────────────────────────────────────────"
+                    continue
+                fi
+                [[ "$pline" == "---" || -z "$pline" ]] && continue
+
+                local pstatus purl ppath
+                pstatus=$(cut -d'|' -f1 <<< "$pline")
+                purl=$(cut -d'|' -f3 <<< "$pline")
+                ppath=$(grep -oP '(?<=://[^/]{1,120})(/.*)?$' <<< "$purl" || echo "/")
+                [[ -z "$ppath" ]] && ppath="/"
+
+                case "$pstatus" in
+                    200)     printf "  ${GREEN}%-8s${NC} %s\n" "$pstatus" "$ppath" ;;
+                    204)     printf "  ${GREEN}%-8s${NC} %s\n" "$pstatus" "$ppath" ;;
+                    301|302|307) printf "  ${YELLOW}%-8s${NC} %s\n" "$pstatus" "$ppath" ;;
+                    401)     printf "  ${RED}%-8s${NC} %s  ${YELLOW}[auth required]${NC}\n" "$pstatus" "$ppath" ;;
+                    403)     printf "  ${RED}%-8s${NC} %s  ${YELLOW}[forbidden — try privesc]${NC}\n" "$pstatus" "$ppath" ;;
+                    *)       printf "  %-8s %s\n" "$pstatus" "$ppath" ;;
+                esac
+            done < "$tmp_paths"
         fi
         echo ""
 
-        # ── 4. WEB PORTS (quick ref) ─────────────────────────────────────
-        echo "--------------------------------------------"
-        echo "  WEB PORTS"
-        echo "--------------------------------------------"
-        echo "  HTTP:   $http_ports_str"
-        echo "  HTTPS:  $https_ports_str"
-        echo ""
+# ── NMAP SCRIPT OUTPUT ───────────────────────────────────────────
+if [[ -f "$output_dir/nmap_results.txt" ]]; then
+    local script_output
 
-        echo "============================================"
+    script_output=$(awk '
+        /^[0-9]+\/tcp/ {in=1}
+        in && /^\|[ _]/ {print}
+    ' "$output_dir/nmap_results.txt")
+
+    if [[ -n "$script_output" ]]; then
+        echo -e "${BOLD}  ════════════════════════════════════════════════════════${NC}"
+        echo -e "${BOLD}  NMAP SCRIPT OUTPUT${NC}"
+        echo -e "${BOLD}  ════════════════════════════════════════════════════════${NC}"
+
+        while IFS= read -r line; do
+            echo "  $line"
+        done <<< "$script_output"
+
+        echo ""
+    fi
+fi
+
+        echo -e "${BOLD}${BLUE}  $bar${NC}"
+
     } > "$summary_file"
 
+    rm -f "$tmp_paths"
     echo -e "${GREEN}[+] Summary written to ${summary_file}${NC}"
 }
 
 previewResults() {
-    echo ""
-    if ! confirm "Preview all results?"; then
-        echo ""; cat "$output_dir/summary.txt"; return
-    fi
-
-    for file in "$output_dir"/*; do
-        [[ -f "$file" ]] || continue
-        [[ "$file" == *"summary.txt" ]] && continue
-        echo ""
-        echo -e "${BLUE}== $(basename "$file") ==${NC}"
-        if [[ "$file" == *"ferox"* ]]; then
-            grep -E "^[0-9]{3}[[:space:]]" "$file" | sort -u || echo "  (no results)"
-        else
-            cat "$file"
-        fi
-    done
-
     echo ""
     cat "$output_dir/summary.txt"
 }
